@@ -41,7 +41,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(s.parse_feed(raw.replace(b'www.federalreserve.gov',b'evil.example'),'FED',2000000000),[])
         with self.assertRaises(Exception): s.parse_feed(b'broken','FED',1)
     def test_no_trade_api(self):
-        text=(Path(__file__).parents[1]/'mt5/Sniper_News_Virtual.mq5').read_text()
+        text=(Path(__file__).parents[1]/'mt5/SniperNews.mqh').read_text()
         for forbidden in ['OrderSend','OrderSendAsync','CTrade','Trade.mqh','PositionClose','PositionModify']:
             self.assertNotIn(forbidden,text)
     def test_poll_record_and_export_contract(self):

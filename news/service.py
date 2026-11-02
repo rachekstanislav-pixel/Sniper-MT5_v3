@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 import time
+import threading
 import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -153,26 +154,42 @@ def main():
         print(json.dumps({'errors': errors, 'events': len(rows(db)), 'signal': 'WAIT' if errors else 'see events'}))
         raise SystemExit(bool(errors))
     state = {'last_poll': 0, 'errors': ['not polled']}
+    stop = threading.Event()
+
+    def collect():
+        worker_db = connect(args.db)
+        try:
+            while not stop.is_set():
+                state['errors'] = ['refresh in progress']
+                try:
+                    state['errors'] = poll(worker_db)
+                except Exception as exc:
+                    state['errors'] = [{'error': type(exc).__name__}]
+                state['last_poll'] = int(time.time())
+                stop.wait(60)
+        finally:
+            worker_db.close()
+
+    threading.Thread(target=collect, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             now = int(time.time())
-            if now - state['last_poll'] >= 60:
-                state['errors'] = poll(db)
-                state['last_poll'] = int(time.time())
-                now = int(time.time())
+            errors = state['errors']
+            if not state['last_poll'] or now - state['last_poll'] > 120:
+                errors = ['collector stale']
             events = rows(db)
             if self.path == '/events':
                 for e in events:
                     side, reason = decision(e, now)
-                    e['signal'] = 'WAIT' if state['errors'] else side
-                    e['reason'] = 'source fetch failed' if state['errors'] else reason
+                    e['signal'] = 'WAIT' if errors else side
+                    e['reason'] = 'source fetch failed' if errors else reason
                     e['expires_at'] = e['published_at'] + TTL
-                body = json.dumps({'events': events, 'errors': state['errors']}, ensure_ascii=False).encode()
+                body = json.dumps({'events': events, 'errors': errors}, ensure_ascii=False).encode()
                 content_type = 'application/json; charset=utf-8'
             elif self.path == '/signal.tsv':
                 eligible = [e for e in events if e['available_at'] <= now <= e['published_at'] + TTL]
-                body = (wire(eligible[-1], now) if eligible and not state['errors'] else 'WAIT\t0\t0\t0\n').encode()
+                body = (wire(eligible[-1], now) if eligible and not errors else 'WAIT\t0\t0\t0\n').encode()
                 content_type = 'text/plain'
             else:
                 self.send_error(404)
@@ -182,7 +199,13 @@ def main():
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-    HTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+    server = HTTPServer(('127.0.0.1', args.port), Handler)
+    try:
+        server.serve_forever()
+    finally:
+        stop.set()
+        server.server_close()
+        db.close()
 
 
 if __name__ == '__main__':

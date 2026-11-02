@@ -1,0 +1,18 @@
+
+void News_RenderStatus() {
+ if(!G_VisualEnabled) return;
+ string name=G_VisualPrefix+"NEWS_STATUS";
+ if(ObjectFind(0,name)<0) {
+  if(!ObjectCreate(0,name,OBJ_LABEL,0,0,0)) return;
+  ObjectSetInteger(0,name,OBJPROP_CORNER,CORNER_LEFT_LOWER);
+  ObjectSetInteger(0,name,OBJPROP_ANCHOR,ANCHOR_LEFT_LOWER);
+  ObjectSetInteger(0,name,OBJPROP_XDISTANCE,12);
+  ObjectSetInteger(0,name,OBJPROP_YDISTANCE,24);
+  ObjectSetInteger(0,name,OBJPROP_FONTSIZE,9);
+  ObjectSetInteger(0,name,OBJPROP_COLOR,clrGold);
+  ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
+ }
+ string status=DiagnosticMode && !MQLInfoInteger(MQL_TESTER) ? "WAIT: diagnostic mode, live news disabled" : News_status;
+ if(News_active) status=News_direction==1 ? "VIRTUAL BUY" : "VIRTUAL SELL";
+ ObjectSetString(0,name,OBJPROP_TEXT,"NEWS [VIRTUAL ONLY] | "+status);
+}
