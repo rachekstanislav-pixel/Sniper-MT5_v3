@@ -8,6 +8,7 @@ import re
 import sqlite3
 import time
 import threading
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
@@ -17,9 +18,11 @@ from pathlib import Path
 FEEDS = {
     'FED': ['https://www.federalreserve.gov/feeds/press_monetary.xml'],
     'BLS': ['https://www.bls.gov/feed/cpi.rss', 'https://www.bls.gov/feed/empsit.rss'],
-    'BEA': ['https://www.bea.gov/news/feed'],
+    'BEA': ['https://apps.bea.gov/rss/rss.xml'],
 }
-HOSTS = {'FED': 'www.federalreserve.gov', 'BLS': 'www.bls.gov', 'BEA': 'www.bea.gov'}
+HOSTS = {'FED': {'www.federalreserve.gov'}, 'BLS': {'www.bls.gov'},
+         'BEA': {'www.bea.gov', 'apps.bea.gov'}}
+SERVICE_VERSION = '0.3.0'
 TTL = 900
 
 
@@ -48,12 +51,14 @@ def rate_data(text):
 
 def parse_feed(data, source, received):
     root = ET.fromstring(data)
+    if root.tag != 'rss' or root.find('channel') is None:
+        raise ValueError('expected RSS 2.0 channel')
     events = []
     for item in root.findall('.//item'):
         title, url, date = (item.findtext(k, '').strip() for k in ('title', 'link', 'pubDate'))
         from urllib.parse import urlparse
         p = urlparse(url)
-        if p.scheme != 'https' or p.hostname != HOSTS[source] or p.username or not title:
+        if p.scheme != 'https' or p.hostname not in HOSTS[source] or p.username or not title:
             continue
         try:
             stamp = parsedate_to_datetime(date)
@@ -102,14 +107,46 @@ def fetch(url):
         return r.read(4_000_000)
 
 
-def poll(db):
+def error_detail(source, url, exc):
+    # Never expose headers, response bodies, proxy credentials or arbitrary exception text.
+    result = {'source': source, 'url': url, 'error': type(exc).__name__}
+    if isinstance(exc, urllib.error.HTTPError):
+        result['http_status'] = exc.code
+        result['category'] = {403: 'access_denied', 404: 'not_found', 410: 'gone',
+                              429: 'rate_limited'}.get(exc.code, 'http_error')
+        if exc.code == 403:
+            result['hint'] = 'Source or gateway denied access; not evidence of a missing feed. No bypass attempted.'
+        elif exc.code in (404, 410):
+            result['hint'] = 'Feed URL is missing or retired; verify the official RSS listing.'
+    elif isinstance(exc, urllib.error.URLError):
+        reason = str(exc.reason)
+        proxy = re.search(r'Tunnel connection failed: (\d{3})', reason)
+        result['category'] = 'proxy_connect_error' if proxy else 'network_or_tls_error'
+        if proxy:
+            result['proxy_http_status'] = int(proxy[1])
+    elif isinstance(exc, ET.ParseError):
+        result['category'] = 'invalid_xml'
+    elif isinstance(exc, ValueError):
+        result['category'] = 'unsupported_or_empty_feed'
+    else:
+        result['category'] = 'processing_error'
+    return result
+
+
+def poll(db, statuses=None):
     errors = []
     for source, urls in FEEDS.items():
         for url in urls:
             try:
                 raw = fetch(url)
                 received = int(time.time())
-                for e in parse_feed(raw, source, received):
+                parsed = parse_feed(raw, source, received)
+                if not parsed:
+                    raise ValueError('no usable publication records')
+                if statuses is not None:
+                    statuses.append({'source': source, 'url': url, 'state': 'ok',
+                                     'checked_at': received, 'parsed_events': len(parsed)})
+                for e in parsed:
                     if db.execute('SELECT 1 FROM events WHERE id=?', (e['id'],)).fetchone():
                         continue
                     if source == 'FED' and e['event_type'] == 'RATE':
@@ -119,10 +156,13 @@ def poll(db):
                             e['received_at'] = int(time.time())
                             e['available_at'] = max(e['published_at'], e['received_at'])
                         except Exception as exc:
-                            e['parse_error'] = type(exc).__name__
+                            e['parse_error'] = error_detail(source, e['url'], exc)
                     store(db, e)
             except Exception as exc:
-                errors.append({'source': source, 'error': type(exc).__name__})
+                detail = error_detail(source, url, exc)
+                errors.append(detail)
+                if statuses is not None:
+                    statuses.append(dict(detail, state='error', checked_at=int(time.time())))
     return errors
 
 
@@ -150,10 +190,11 @@ def main():
         Path(args.export + '.tsv').write_text(''.join(wire(e, e['available_at']) for e in events), encoding='ascii')
         return
     if args.once:
-        errors = poll(db)
-        print(json.dumps({'errors': errors, 'events': len(rows(db)), 'signal': 'WAIT' if errors else 'see events'}))
+        statuses = []
+        errors = poll(db, statuses)
+        print(json.dumps({'version': SERVICE_VERSION, 'sources': statuses, 'errors': errors, 'events': len(rows(db)), 'signal': 'WAIT' if errors else 'see events'}, indent=2))
         raise SystemExit(bool(errors))
-    state = {'last_poll': 0, 'errors': ['not polled']}
+    state = {'last_poll': 0, 'errors': ['not polled'], 'sources': []}
     stop = threading.Event()
 
     def collect():
@@ -162,7 +203,10 @@ def main():
             while not stop.is_set():
                 state['errors'] = ['refresh in progress']
                 try:
-                    state['errors'] = poll(worker_db)
+                    statuses = []
+                    state['errors'] = poll(worker_db, statuses)
+                    state['sources'] = statuses
+                    print(json.dumps({'version': SERVICE_VERSION, 'sources': statuses}, ensure_ascii=False), flush=True)
                 except Exception as exc:
                     state['errors'] = [{'error': type(exc).__name__}]
                 state['last_poll'] = int(time.time())
@@ -185,7 +229,7 @@ def main():
                     e['signal'] = 'WAIT' if errors else side
                     e['reason'] = 'source fetch failed' if errors else reason
                     e['expires_at'] = e['published_at'] + TTL
-                body = json.dumps({'events': events, 'errors': errors}, ensure_ascii=False).encode()
+                body = json.dumps({'version': SERVICE_VERSION, 'sources': state['sources'], 'events': events, 'errors': errors}, ensure_ascii=False, indent=2).encode()
                 content_type = 'application/json; charset=utf-8'
             elif self.path == '/signal.tsv':
                 eligible = [e for e in events if e['available_at'] <= now <= e['published_at'] + TTL]
