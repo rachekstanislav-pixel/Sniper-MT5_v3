@@ -22,7 +22,7 @@ FEEDS = {
 }
 HOSTS = {'FED': {'www.federalreserve.gov'}, 'BLS': {'www.bls.gov'},
          'BEA': {'www.bea.gov', 'apps.bea.gov'}}
-SERVICE_VERSION = '0.3.0'
+SERVICE_VERSION = '0.3.1'
 TTL = 900
 
 
@@ -51,26 +51,45 @@ def rate_data(text):
 
 def parse_feed(data, source, received):
     root = ET.fromstring(data)
-    if root.tag != 'rss' or root.find('channel') is None:
-        raise ValueError('expected RSS 2.0 channel')
+    atom = '{http://www.w3.org/2005/Atom}'
+    is_atom = root.tag == atom + 'feed'
+    if not is_atom and (root.tag != 'rss' or root.find('channel') is None):
+        raise ValueError('expected RSS 2.0 or Atom feed')
     events = []
-    for item in root.findall('.//item'):
-        title, url, date = (item.findtext(k, '').strip() for k in ('title', 'link', 'pubDate'))
+    items = root.findall(atom + 'entry') if is_atom else root.findall('./channel/item')
+    for item in items:
+        if is_atom:
+            title = item.findtext(atom + 'title', '').strip()
+            links = [link.get('href', '') for link in item.findall(atom + 'link')
+                     if link.get('rel', 'alternate') == 'alternate']
+            url = links[0].strip() if links else ''
+            # Never substitute feed-level updated or entry updated for publication time.
+            date = item.findtext(atom + 'published', '').strip()
+        else:
+            title, url, date = (item.findtext(k, '').strip() for k in ('title', 'link', 'pubDate'))
         from urllib.parse import urlparse
         p = urlparse(url)
         if p.scheme != 'https' or p.hostname not in HOSTS[source] or p.username or not title:
             continue
         try:
-            stamp = parsedate_to_datetime(date)
+            stamp = dt.datetime.fromisoformat(date.replace('Z', '+00:00')) if is_atom else parsedate_to_datetime(date)
             if stamp.tzinfo is None:
                 continue
             published = int(stamp.timestamp())
         except (ValueError, TypeError, OverflowError):
             continue
+        # BLS entry headlines say "CPI ...", not necessarily "Consumer Price Index".
+        kind = event_type(title)
+        if source == 'BLS' and is_atom:
+            feed_id = root.findtext(atom + 'id', '').lower()
+            if feed_id == 'bls.gov:feed:cpi':
+                kind = 'CPI'
+            elif feed_id == 'bls.gov:feed:empsit':
+                kind = 'NFP_UNEMPLOYMENT'
         identity = hashlib.sha256((source + '\n' + url).encode()).hexdigest()
         events.append(dict(id=identity, source=source, url=url, published_at=published,
                            received_at=received, available_at=max(published, received),
-                           event_type=event_type(title), title=title, numbers={}, synthetic=False))
+                           event_type=kind, title=title, numbers={}, synthetic=False))
     return events
 
 
