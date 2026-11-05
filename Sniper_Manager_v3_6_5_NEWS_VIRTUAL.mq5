@@ -374,9 +374,9 @@ void News_Receive(datetime now) {
   char request[],response[]; string headers;
   int code=WebRequest("GET",News_ServiceURL,"",200,request,response,headers);
   if(code==200) {
-   News_status="WAIT: no actionable publication";
+   News_status=News_pending!="" ? "CONNECTED: WAIT price confirmation" : "CONNECTED: WAIT no fresh rate signal";
    string line=CharArrayToString(response,0,-1,CP_UTF8); StringTrimRight(line);
-   if(line=="WAIT\t0\t0\t0") { if(!News_active) News_pending=""; return; }
+   if(line=="WAIT\t0\t0\t0") { if(!News_active) { News_pending=""; News_status="CONNECTED: WAIT no fresh rate signal"; } return; }
    News_Accept(line,now);
   } else { if(!News_active) News_pending=""; News_status="WAIT: service unavailable ("+IntegerToString(code)+")"; }
  }
@@ -2278,7 +2278,7 @@ bool SubmitEntry(int side,bool pending,double proposedEntry,double proposedSL,st
    request.type_time=ORDER_TIME_GTC; request.expiration=0; request.deviation=10;
    if(baseStop && (SymbolInfoInteger(_Symbol,SYMBOL_EXPIRATION_MODE) & SYMBOL_EXPIRATION_SPECIFIED)!=0) {
       request.type_time=ORDER_TIME_SPECIFIED;
-      request.expiration=TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period);
+      request.expiration=(datetime)((long)TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period));
    }
    long modes=SymbolInfoInteger(_Symbol,SYMBOL_FILLING_MODE);
    if(pending) request.type_filling=ORDER_FILLING_RETURN;

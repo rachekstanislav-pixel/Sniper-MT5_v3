@@ -22,6 +22,7 @@ class Integration(unittest.TestCase):
                          '   News_OnTick();\n']:
             self.assertEqual(restored.count(addition),1)
             restored=restored.replace(addition,'',1)
+        restored=restored.replace('request.expiration=(datetime)((long)TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period));', 'request.expiration=TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period);')
         self.assertEqual(restored,builder.BASE.read_text())
     def test_engine_cannot_trade_or_remove_main_ea(self):
         engine=(ROOT/'news/mt5/SniperNews.mqh').read_text()

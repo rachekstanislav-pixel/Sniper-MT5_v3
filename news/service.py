@@ -22,7 +22,7 @@ FEEDS = {
 }
 HOSTS = {'FED': {'www.federalreserve.gov'}, 'BLS': {'www.bls.gov'},
          'BEA': {'www.bea.gov', 'apps.bea.gov'}}
-SERVICE_VERSION = '0.3.1'
+SERVICE_VERSION = '0.4.0'
 TTL = 900
 
 
@@ -40,10 +40,23 @@ def rate_data(text):
     # Only an explicit direction AND an explicit new target range. No inferred consensus.
     s = html.unescape(re.sub('<[^>]+>', ' ', text))
     s = re.sub(r'\s+', ' ', s)
-    m = re.search(r'decided to (raise|lower|maintain) the target range for the federal funds rate (?:by .*? to|to|at) (\d+(?:\.\d+)?) to (\d+(?:\.\d+)?) percent', s, re.I)
+    number = r'(?:\d+(?:\.\d+)?(?:-\d+/\d+)?|\d+/\d+)'
+    m = re.search(r'decided to (raise|lower|maintain) the target range for the federal funds rate (?:by .*? to|to|at) (' + number + r') to (' + number + r') percent', s, re.I)
     if not m:
         return {}
-    lo, hi = float(m[2]), float(m[3])
+    def value(text):
+        if '-' in text:
+            whole, fraction = text.split('-')
+            numerator, denominator = fraction.split('/')
+            return float(whole) + float(numerator) / float(denominator)
+        if '/' in text:
+            numerator, denominator = text.split('/')
+            return float(numerator) / float(denominator)
+        return float(text)
+    try:
+        lo, hi = value(m[2]), value(m[3])
+    except (ValueError, ZeroDivisionError):
+        return {}
     if not 0 <= lo <= hi <= 30:
         return {}
     return {'action': m[1].lower(), 'target_low_pct': lo, 'target_high_pct': hi}
@@ -195,6 +208,22 @@ def wire(e, now):
     return f"{e['id']}\t{e['available_at']}\t{e['published_at'] + TTL}\t{direction}\n"
 
 
+def evaluated(e, now, statuses, collector_ready):
+    if not collector_ready:
+        return 'WAIT', 'collector not ready, refreshing or stale'
+    matching = [x for x in statuses if x.get('source') == e['source']]
+    if not matching or any(x.get('state') != 'ok' or now - x.get('checked_at', 0) > 120
+                           or x.get('checked_at', 0) > now for x in matching):
+        return 'WAIT', 'publication source unavailable or stale'
+    return decision(e, now)
+
+
+def signal_payload(events, now, statuses, collector_ready):
+    # Collection-only publications must not mask a valid FED rate candidate.
+    eligible = [e for e in events if evaluated(e, now, statuses, collector_ready)[0] in ('BUY', 'SELL')]
+    return wire(eligible[-1], now) if eligible else 'WAIT\t0\t0\t0\n'
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--db', default='news.sqlite3')
@@ -213,13 +242,14 @@ def main():
         errors = poll(db, statuses)
         print(json.dumps({'version': SERVICE_VERSION, 'sources': statuses, 'errors': errors, 'events': len(rows(db)), 'signal': 'WAIT' if errors else 'see events'}, indent=2))
         raise SystemExit(bool(errors))
-    state = {'last_poll': 0, 'errors': ['not polled'], 'sources': []}
+    state = {'last_poll': 0, 'errors': ['not polled'], 'sources': [], 'refreshing': True}
     stop = threading.Event()
 
     def collect():
         worker_db = connect(args.db)
         try:
             while not stop.is_set():
+                state['refreshing'] = True
                 state['errors'] = ['refresh in progress']
                 try:
                     statuses = []
@@ -229,6 +259,7 @@ def main():
                 except Exception as exc:
                     state['errors'] = [{'error': type(exc).__name__}]
                 state['last_poll'] = int(time.time())
+                state['refreshing'] = False
                 stop.wait(60)
         finally:
             worker_db.close()
@@ -241,18 +272,21 @@ def main():
             errors = state['errors']
             if not state['last_poll'] or now - state['last_poll'] > 120:
                 errors = ['collector stale']
+            statuses = state['sources']
+            ready = bool(state['last_poll']) and now - state['last_poll'] <= 120 and not state['refreshing']
+            # Unexpected collector failures block every source; ordinary per-source errors do not.
+            ready = ready and all(isinstance(x, dict) and 'source' in x for x in errors)
             events = rows(db)
             if self.path == '/events':
                 for e in events:
-                    side, reason = decision(e, now)
-                    e['signal'] = 'WAIT' if errors else side
-                    e['reason'] = 'source fetch failed' if errors else reason
+                    side, reason = evaluated(e, now, statuses, ready)
+                    e['signal'] = side
+                    e['reason'] = reason
                     e['expires_at'] = e['published_at'] + TTL
                 body = json.dumps({'version': SERVICE_VERSION, 'sources': state['sources'], 'events': events, 'errors': errors}, ensure_ascii=False, indent=2).encode()
                 content_type = 'application/json; charset=utf-8'
             elif self.path == '/signal.tsv':
-                eligible = [e for e in events if e['available_at'] <= now <= e['published_at'] + TTL]
-                body = (wire(eligible[-1], now) if eligible and not errors else 'WAIT\t0\t0\t0\n').encode()
+                body = signal_payload(events, now, statuses, ready).encode()
                 content_type = 'text/plain'
             else:
                 self.send_error(404)

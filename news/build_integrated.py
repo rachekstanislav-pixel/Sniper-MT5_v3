@@ -18,6 +18,7 @@ def build():
         if base.count(before) != 1:
             raise RuntimeError('Baseline hook changed: ' + before)
         base = base.replace(before, after, 1)
+    base = base.replace('request.expiration=TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period);', 'request.expiration=(datetime)((long)TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period));')
     engine = (ROOT / 'news/mt5/SniperNews.mqh').read_text(encoding='utf-8')
     render = (ROOT / 'news/render_status.mqpart').read_text(encoding='utf-8')
     base = base.replace('int OnInit() {', engine + '\n' + render + '\nint OnInit() {', 1)
