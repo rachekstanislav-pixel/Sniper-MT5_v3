@@ -3,10 +3,11 @@ import hashlib
 from pathlib import Path
 import zipfile
 ROOT = Path(__file__).resolve().parents[1]
-NAME = 'Sniper_Manager_3.67_News_0.5.0_Tester'
+NAME = 'Sniper_Manager_3.68_VisualFix_News_0.5.0'
 FILES = {
-    'Sniper_Manager_v3_6_7_NEWS_TESTER.mq5': 'Sniper_Manager_v3_6_7_NEWS_TESTER.mq5',
-    'releases/INSTALL_3.67_RU.md': 'README_RU.md',
+    'Sniper_Manager_v3_6_8_VISUAL_FIX.mq5': 'Sniper_Manager_v3_6_8_VISUAL_FIX.mq5',
+    'releases/INSTALL_3.68_RU.md': 'README_RU.md',
+    'releases/INSTALL_3.67_RU.md': 'INSTALL_TESTER_3.67_RU.md',
     'news/presets/NEWS_ONLY_SYNTHETIC_3.67.set': 'NEWS_ONLY_SYNTHETIC_3.67.set',
     'news/service.py': 'news/service.py',
     'news/start_news_windows.cmd': 'news/start_news_windows.cmd',

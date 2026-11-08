@@ -1,0 +1,32 @@
+// Visual ownership migration: current chart only; no position/order/news operations.
+bool IsSniperVisualLogical(string logical) {
+ if(StringFind(logical,"Txt_")==0) logical=StringSubstr(logical,4);
+ string exact[]={"HUD_BG","Btn_CloseAll","DiagNext","StructureStatus","NEWS_STATUS","PredZone","CompZone_Current","D1_FIBO","H4_FIBO","D1_ANCHOR_WAIT"};
+ for(int i=0;i<ArraySize(exact);i++) if(logical==exact[i]) return true;
+ string groups[]={"DB_","PriceCaption_","SN_DIAG_","SN24_STRUCT_","CenterInfo","InfoOneRow","InfoMain_","InfoDetails_","ScopeInfo","Line_","H4_Confirm_","Legacy_","BaseZone_","OB_H4_","FVG_H4_","Virtual_TP_","Global_Stop_","View_TP_","View_Stop_","DiagSig_","Signal_","Sweep_","AI_"};
+ for(int i=0;i<ArraySize(groups);i++) if(StringFind(logical,groups[i])==0) return true;
+ return false;
+}
+bool IsSniperVisualObject(string raw) {
+ if(StringFind(raw,"SN368V_")==0) return IsSniperVisualLogical(StringSubstr(raw,7));
+ // Legacy revisions used S36_<eight hex digits>_<logical name>.
+ if(StringLen(raw)<14 || StringSubstr(raw,0,4)!="S36_" || StringSubstr(raw,12,1)!="_") return false;
+ for(int i=4;i<12;i++) {
+  ushort c=StringGetCharacter(raw,i);
+  if(!((c>='0' && c<='9') || (c>='A' && c<='F') || (c>='a' && c<='f'))) return false;
+ }
+ return IsSniperVisualLogical(StringSubstr(raw,13));
+}
+void InitVisualNamespace() {
+ // A new random prefix used to leave prior template/symbol/timeframe copies untouched.
+ // Clear recognized Sniper views only; foreign/manual objects are never blanket-deleted.
+ ReleasePanelCanvases();
+ for(int i=ObjectsTotal(0,-1,-1)-1;i>=0;i--) {
+  string raw=ObjectName(0,i,-1,-1);
+  if(IsSniperVisualObject(raw)) ObjectDelete(0,raw);
+ }
+ // Stable inside one chart, including symbol/TF changes and saved templates.
+ // MT5 permits only one attached EA per chart. All object calls still target chart 0.
+ G_VisualPrefix="SN368V_";
+ ChartRedraw(0);
+}

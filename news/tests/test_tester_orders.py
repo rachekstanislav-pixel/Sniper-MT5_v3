@@ -27,7 +27,7 @@ class TesterOrders(unittest.TestCase):
         self.assertEqual(values['News_Replay'],'true')
         self.assertTrue((ROOT/'news/fixtures'/values['News_ReplayFile']).exists())
         self.assertTrue(values['News_JournalFile'].startswith('TESTER_'))
-        source=(ROOT/'Sniper_Manager_v3_6_7_NEWS_TESTER.mq5').read_text()
+        source=(ROOT/'Sniper_Manager_v3_6_8_VISUAL_FIX.mq5').read_text()
         for key in values:
             self.assertRegex(source,r'input\s+\w+\s+'+re.escape(key)+r'\s*=')
     @unittest.skipUnless(shutil.which('g++'),'C++ source harness not run: compiler unavailable')

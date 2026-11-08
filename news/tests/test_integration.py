@@ -26,7 +26,8 @@ class Integration(unittest.TestCase):
             self.assertEqual(restored.count(addition),1)
             restored=restored.replace(addition,'',1)
         restored=restored.replace('request.expiration=(datetime)((long)TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period));', 'request.expiration=TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period);')
-        restored=restored.replace('#property version "3.67"', '#property version "3.65"')
+        restored=builder.visual_fix.revert(restored,builder.BASE.read_text())
+        restored=restored.replace('#property version "3.68"', '#property version "3.65"')
         self.assertEqual(restored,builder.BASE.read_text())
     def test_engine_cannot_trade_or_remove_main_ea(self):
         engine=(ROOT/'news/mt5/SniperNews.mqh').read_text()
