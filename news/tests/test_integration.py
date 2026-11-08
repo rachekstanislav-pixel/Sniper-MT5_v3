@@ -10,7 +10,7 @@ spec.loader.exec_module(builder)
 
 class Integration(unittest.TestCase):
     def test_generated_file_and_unchanged_base_bodies(self):
-        output=(ROOT/'Sniper_Manager_v3_6_5_NEWS_VIRTUAL.mq5').read_text()
+        output=builder.OUTPUT.read_text()
         self.assertEqual(output,builder.build())
         # Remove only the explicitly enumerated integration additions and engine.
         engine=(ROOT/'news/mt5/SniperNews.mqh').read_text()
@@ -23,6 +23,7 @@ class Integration(unittest.TestCase):
             self.assertEqual(restored.count(addition),1)
             restored=restored.replace(addition,'',1)
         restored=restored.replace('request.expiration=(datetime)((long)TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period));', 'request.expiration=TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period);')
+        restored=restored.replace('#property version "3.66"', '#property version "3.65"')
         self.assertEqual(restored,builder.BASE.read_text())
     def test_engine_cannot_trade_or_remove_main_ea(self):
         engine=(ROOT/'news/mt5/SniperNews.mqh').read_text()

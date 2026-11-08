@@ -6,7 +6,7 @@ not actual Fed decisions or a historical news dataset. The TSV protocol has no s
 field: provenance is carried by this filename/document. Never use it as live news input.
 Real historical quotes come from the broker's Strategy Tester data; not supplied here.
 
-Use the full EA in local Strategy Tester, GOLD M5, real ticks, 2026-11-06 to 2026-11-07,
+Use Sniper_Manager_v3_6_6_NEWS_VIRTUAL.mq5 in local Strategy Tester, GOLD M5, real ticks, 2026-11-06 to 2026-11-07,
 no optimization or remote/cloud agents. Python and WebRequest are not involved.
 Put the TSV in Terminal Common Data Folder/Files, accessed via MT5 File/Open Common
 Data Folder (if available), or from File/Open Data Folder navigate two levels up from
