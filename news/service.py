@@ -3,6 +3,7 @@ import argparse
 import datetime as dt
 import hashlib
 import html
+from html.parser import HTMLParser
 import json
 import re
 import sqlite3
@@ -22,7 +23,8 @@ FEEDS = {
 }
 HOSTS = {'FED': {'www.federalreserve.gov'}, 'BLS': {'www.bls.gov'},
          'BEA': {'www.bea.gov', 'apps.bea.gov'}}
-SERVICE_VERSION = '0.4.0'
+SERVICE_VERSION = '0.5.0'
+PARSER_VERSION = 2
 TTL = 900
 
 
@@ -36,30 +38,62 @@ def event_type(title):
     return 'OTHER'
 
 
+class ReleaseText(HTMLParser):
+    """Retain word boundaries; discard executable/style text, not TLS checks."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('script', 'style'):
+            self.hidden += 1
+        if tag in ('p', 'div', 'br', 'li'):
+            self.parts.append(' ')
+
+    def handle_endtag(self, tag):
+        if tag in ('script', 'style'):
+            self.hidden = max(0, self.hidden - 1)
+        if tag in ('p', 'div', 'li'):
+            self.parts.append(' ')
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
 def rate_data(text):
-    # Only an explicit direction AND an explicit new target range. No inferred consensus.
-    s = html.unescape(re.sub('<[^>]+>', ' ', text))
-    s = re.sub(r'\s+', ' ', s)
-    number = r'(?:\d+(?:\.\d+)?(?:-\d+/\d+)?|\d+/\d+)'
-    m = re.search(r'decided to (raise|lower|maintain) the target range for the federal funds rate (?:by .*? to|to|at) (' + number + r') to (' + number + r') percent', s, re.I)
-    if not m:
-        return {}
-    def value(text):
-        if '-' in text:
-            whole, fraction = text.split('-')
-            numerator, denominator = fraction.split('/')
-            return float(whole) + float(numerator) / float(denominator)
-        if '/' in text:
-            numerator, denominator = text.split('/')
-            return float(numerator) / float(denominator)
-        return float(text)
-    try:
-        lo, hi = value(m[2]), value(m[3])
-    except (ValueError, ZeroDivisionError):
-        return {}
-    if not 0 <= lo <= hi <= 30:
-        return {}
-    return {'action': m[1].lower(), 'target_low_pct': lo, 'target_high_pct': hi}
+    parser = ReleaseText()
+    parser.feed(text)
+    text = html.unescape(''.join(parser.parts))
+    # Official releases may use typographic hyphens and Unicode fraction glyphs.
+    text = text.translate(str.maketrans({'–': '-', '−': '-', '‑': '-', '⁄': '/'}))
+    for glyph, fraction in {'¼': '1/4', '½': '1/2', '¾': '3/4'}.items():
+        text = re.sub(r'(\d)\s*' + glyph, lambda m: m[1] + '-' + fraction, text)
+        text = text.replace(glyph, fraction)
+    text = re.sub(r'\s+', ' ', text)
+    number = r'(?:\d+-\d+/\d+|\d+/\d+|\d+(?:\.\d+)?)'
+    pattern = (r'decided to (raise|lower|maintain) the target range for the federal funds rate '
+               r'(?:by [^.;]{1,100}? to|to|at) (' + number + r') to (' + number + r') percent')
+    def value(token):
+        whole, fraction = token.split('-', 1) if '-' in token else ('0', token)
+        if '/' in fraction:
+            numerator, denominator = map(float, fraction.split('/'))
+            if denominator <= 0 or numerator >= denominator:
+                raise ValueError('invalid proper fraction')
+            return float(whole) + numerator / denominator
+        return float(fraction)
+    matches = []
+    for m in re.finditer(pattern, text, re.I):
+        try:
+            lo, hi = value(m[2]), value(m[3])
+        except (ValueError, ZeroDivisionError):
+            return {}
+        if not 0 <= lo <= hi <= 30 or hi - lo > 1:
+            return {}
+        matches.append({'action': m[1].lower(), 'target_low_pct': lo, 'target_high_pct': hi})
+    # Contradictory statements must not produce a direction.
+    return matches[0] if matches and all(m == matches[0] for m in matches) else {}
 
 
 def parse_feed(data, source, received):
@@ -118,12 +152,15 @@ def decision(e, now):
     action = e['numbers'].get('action')
     if action in ('lower', 'raise'):
         return ('BUY' if action == 'lower' else 'SELL'), 'rate-change hypothesis; price confirmation required'
-    return 'WAIT', 'missing unambiguous rate change or unchanged rate'
+    if action == 'maintain':
+        return 'WAIT', 'rate unchanged: no directional hypothesis'
+    return 'WAIT', e.get('parse_status', 'rate text not parsed')
 
 
 def connect(path):
     db = sqlite3.connect(path)
     db.execute('CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS documents (url TEXT, sha256 TEXT, received_at INTEGER, body BLOB, PRIMARY KEY(url, sha256))')
     return db
 
 
@@ -131,6 +168,44 @@ def store(db, e):
     # First observation is immutable: polling cannot refresh an old publication's TTL.
     with db:
         return db.execute('INSERT OR IGNORE INTO events VALUES (?,?)', (e['id'], json.dumps(e, ensure_ascii=False))).rowcount
+
+
+def archive(db, url, body, received):
+    digest = hashlib.sha256(body).hexdigest()
+    with db:
+        db.execute('INSERT OR IGNORE INTO documents VALUES (?,?,?,?)', (url, digest, received, body))
+    return digest
+
+
+def enrich_rate(db, e):
+    if e['source'] != 'FED' or e['event_type'] != 'RATE':
+        return e
+    if e.get('numbers'):
+        return e  # Never rewrite an already interpreted decision from a revised page.
+    now = int(time.time())
+    if e.get('parser_version') == PARSER_VERSION:
+        # Unknown wording is reparsed on a parser upgrade; transient HTTP errors retry.
+        if e.get('parse_status') == 'unrecognized_rate_text':
+            return e
+        if now - e.get('last_analysis_attempt', 0) < 60:
+            return e
+    e['last_analysis_attempt'] = now
+    e['parser_version'] = PARSER_VERSION
+    try:
+        raw = fetch(e['url'])
+        received = int(time.time())
+        e['document_sha256'] = archive(db, e['url'], raw, received)
+        e['numbers'] = rate_data(raw.decode('utf-8-sig'))
+        e['analysis_received_at'] = received
+        # The interpretation cannot be visible before its supporting content arrived.
+        # Keep the FIRST feed observation and publication timestamps unchanged.
+        e['available_at'] = max(e['available_at'], received)
+        e['parse_status'] = 'parsed' if e['numbers'] else 'unrecognized_rate_text'
+        e.pop('parse_error', None)
+    except Exception as exc:
+        e['parse_status'] = 'release_fetch_or_parse_failed'
+        e['parse_error'] = error_detail(e['source'], e['url'], exc)
+    return e
 
 
 def fetch(url):
@@ -172,24 +247,23 @@ def poll(db, statuses=None):
             try:
                 raw = fetch(url)
                 received = int(time.time())
+                archive(db, url, raw, received)
                 parsed = parse_feed(raw, source, received)
                 if not parsed:
                     raise ValueError('no usable publication records')
                 if statuses is not None:
                     statuses.append({'source': source, 'url': url, 'state': 'ok',
                                      'checked_at': received, 'parsed_events': len(parsed)})
-                for e in parsed:
-                    if db.execute('SELECT 1 FROM events WHERE id=?', (e['id'],)).fetchone():
-                        continue
-                    if source == 'FED' and e['event_type'] == 'RATE':
-                        try:
-                            page = fetch(e['url']).decode('utf-8')
-                            e['numbers'] = rate_data(page)
-                            e['received_at'] = int(time.time())
-                            e['available_at'] = max(e['published_at'], e['received_at'])
-                        except Exception as exc:
-                            e['parse_error'] = error_detail(source, e['url'], exc)
-                    store(db, e)
+                for incoming in parsed:
+                    existing = db.execute('SELECT data FROM events WHERE id=?', (incoming['id'],)).fetchone()
+                    e = json.loads(existing[0]) if existing else incoming
+                    e = enrich_rate(db, e)
+                    if existing:
+                        with db:
+                            db.execute('UPDATE events SET data=? WHERE id=?', (json.dumps(e, ensure_ascii=False), e['id']))
+                    else:
+                        store(db, e)
+
             except Exception as exc:
                 detail = error_detail(source, url, exc)
                 errors.append(detail)
@@ -224,6 +298,49 @@ def signal_payload(events, now, statuses, collector_ready):
     return wire(eligible[-1], now) if eligible else 'WAIT\t0\t0\t0\n'
 
 
+def diagnose(events, now, statuses, ready):
+    from collections import Counter
+    reasons = Counter()
+    for e in events:
+        side, reason = evaluated(e, now, statuses, ready)
+        reasons[reason] += 1
+    rates = [e for e in events if e['source'] == 'FED' and e['event_type'] == 'RATE']
+    latest = max(rates, key=lambda e: e['published_at']) if rates else None
+    selected = signal_payload(events, now, statuses, ready).split('\t')[0]
+    if not ready:
+        terminal_state = 'COLLECTOR_PAUSED'
+    elif selected != 'WAIT':
+        terminal_state = 'RATE_CANDIDATE'
+    elif latest is None:
+        terminal_state = 'NO_RATE_PUBLICATION'
+    else:
+        reason = evaluated(latest, now, statuses, ready)[1]
+        terminal_state = {
+            'stale publication': 'STALE_RATE',
+            'rate unchanged: no directional hypothesis': 'RATE_UNCHANGED',
+            'publication source unavailable or stale': 'FED_UNAVAILABLE',
+            'unrecognized_rate_text': 'RATE_TEXT_UNRECOGNIZED',
+            'release_fetch_or_parse_failed': 'RATE_RELEASE_ERROR',
+            'not yet available': 'NOT_YET_AVAILABLE',
+        }.get(reason, 'NO_VALID_RATE_SIGNAL')
+    return {
+        'terminal_state': terminal_state,
+        'scope': 'Only FED rate changes can give directions; BLS/BEA collection only',
+        'collector_ready': ready,
+        'signal': 'WAIT' if selected == 'WAIT' else next(
+            (evaluated(e, now, statuses, ready)[0] for e in events if e['id'] == selected), 'WAIT'),
+        'wait_reasons': dict(reasons),
+        'latest_fed_rate': None if latest is None else {
+            'id': latest['id'], 'url': latest['url'], 'published_at': latest['published_at'],
+            'first_received_at': latest['received_at'], 'available_at': latest['available_at'],
+            'age_seconds': now - latest['published_at'], 'expires_at': latest['published_at'] + TTL,
+            'numbers': latest.get('numbers', {}), 'parse_status': latest.get('parse_status', 'legacy_record'),
+            'parse_error': latest.get('parse_error'),
+            'current_decision': evaluated(latest, now, statuses, ready),
+        },
+    }
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('--db', default='news.sqlite3')
@@ -240,7 +357,7 @@ def main():
     if args.once:
         statuses = []
         errors = poll(db, statuses)
-        print(json.dumps({'version': SERVICE_VERSION, 'sources': statuses, 'errors': errors, 'events': len(rows(db)), 'signal': 'WAIT' if errors else 'see events'}, indent=2))
+        print(json.dumps({'version': SERVICE_VERSION, 'sources': statuses, 'errors': errors, 'events': len(rows(db)), 'diagnostics': diagnose(rows(db), int(time.time()), statuses, True)}, indent=2))
         raise SystemExit(bool(errors))
     state = {'last_poll': 0, 'errors': ['not polled'], 'sources': [], 'refreshing': True}
     stop = threading.Event()
@@ -277,13 +394,17 @@ def main():
             # Unexpected collector failures block every source; ordinary per-source errors do not.
             ready = ready and all(isinstance(x, dict) and 'source' in x for x in errors)
             events = rows(db)
-            if self.path == '/events':
+            if self.path == '/status':
+                body = json.dumps({'version': SERVICE_VERSION, 'sources': statuses, 'errors': errors,
+                                   'diagnostics': diagnose(events, now, statuses, ready)}, ensure_ascii=False, indent=2).encode()
+                content_type = 'application/json; charset=utf-8'
+            elif self.path == '/events':
                 for e in events:
                     side, reason = evaluated(e, now, statuses, ready)
                     e['signal'] = side
                     e['reason'] = reason
                     e['expires_at'] = e['published_at'] + TTL
-                body = json.dumps({'version': SERVICE_VERSION, 'sources': state['sources'], 'events': events, 'errors': errors}, ensure_ascii=False, indent=2).encode()
+                body = json.dumps({'version': SERVICE_VERSION, 'sources': state['sources'], 'diagnostics': diagnose(events, now, statuses, ready), 'events': events, 'errors': errors}, ensure_ascii=False, indent=2).encode()
                 content_type = 'application/json; charset=utf-8'
             elif self.path == '/signal.tsv':
                 body = signal_payload(events, now, statuses, ready).encode()
@@ -293,12 +414,17 @@ def main():
                 return
             self.send_response(200)
             self.send_header('Content-Type', content_type)
+            if self.path == '/signal.tsv':
+                self.send_header('X-Sniper-State', diagnose(events, now, statuses, ready)['terminal_state'])
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
     server = HTTPServer(('127.0.0.1', args.port), Handler)
+    print(f'SniperNews {SERVICE_VERSION}: http://127.0.0.1:{args.port}/status', flush=True)
     try:
         server.serve_forever()
+    except KeyboardInterrupt:
+        print("News service stopped.", flush=True)
     finally:
         stop.set()
         server.server_close()

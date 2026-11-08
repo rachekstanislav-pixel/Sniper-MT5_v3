@@ -18,6 +18,8 @@ int News_direction=0,News_replay_handle=INVALID_HANDLE;
 double News_baseline=0,News_entry=0,News_sl=0,News_tp=0;
 bool News_active=false;
 bool News_ready=false;
+bool News_live_confirmed=false;
+datetime News_last_valid=0;
 string News_status="WAIT: initializing";
 ulong News_last_poll=0;
 
@@ -40,17 +42,50 @@ bool News_ValidID(string id) {
  for(int i=0;i<64;i++) { ushort c=StringGetCharacter(id,i); if(!((c>='0' && c<='9') || (c>='a' && c<='f'))) return false; }
  return true;
 }
+void News_Pause(string reason) {
+ // Keep the pending ID until expiry; a transient outage must not consume it forever.
+ // No new entry while paused, and confirmation restarts after service recovery.
+ News_live_confirmed=false;
+ if(!News_active) { News_baseline=0; News_baseline_time=0; }
+ News_status=reason;
+}
 void News_Accept(string line,datetime now) {
- string f[]; if(StringSplit(line,'\t',f)!=4) { if(!News_active) News_pending=""; News_status="WAIT: malformed payload"; return; }
- if(!News_ValidID(f[0]) || !News_Digits(f[1]) || !News_Digits(f[2]) || (f[3]!="1" && f[3]!="-1" && f[3]!="0")) { if(!News_active) News_pending=""; News_status="WAIT: malformed payload"; return; }
+ string f[]; if(StringSplit(line,'\t',f)!=4) { News_Pause("WAIT: malformed payload"); return; }
+ if(!News_ValidID(f[0]) || !News_Digits(f[1]) || !News_Digits(f[2]) || (f[3]!="1" && f[3]!="-1" && f[3]!="0")) { News_Pause("WAIT: malformed payload"); return; }
  string id=f[0]; long a=StringToInteger(f[1]),e=StringToInteger(f[2]); int d=(int)StringToInteger(f[3]);
- if(StringLen(id)!=64 || a<=0 || e<a || (d!=1 && d!=-1) || now<a || now>e || News_Seen(id)) return;
+ if(a<=0 || e<a || (d!=1 && d!=-1) || now<a || now>e) { News_Pause("WAIT: invalid or expired signal"); return; }
+ if(id==News_pending) {
+  if(a!=(long)News_available || e!=(long)News_expires || d!=News_direction) { News_Pause("WAIT: inconsistent signal"); return; }
+  News_live_confirmed=true; News_last_valid=now;
+  News_status=News_active ? "VIRTUAL position active" : "CONNECTED: WAIT price confirmation";
+  return;
+ }
+ if(News_Seen(id)) return;
  // Never queue an old event behind an active position.
  News_Remember(id);
  if(News_active || News_pending!="") { News_Log(id,"WAIT",now,0,0,"busy; publication consumed"); return; }
  News_status="WAIT: price confirmation";
+ News_live_confirmed=true; News_last_valid=now;
+ News_sl=0; News_tp=0;
  News_pending=id; News_available=(datetime)a; News_expires=(datetime)e; News_direction=d; News_baseline=0;
  News_Log(id,"OBSERVE",now,0,0,"rate hypothesis; awaiting post-availability price");
+}
+string News_HeaderState(string headers) {
+ string lines[];
+ StringSplit(headers,'\n',lines);
+ for(int i=0;i<ArraySize(lines);i++) {
+  string lower=lines[i]; StringToLower(lower);
+  if(StringFind(lower,"x-sniper-state:")==0) {
+   string value=StringSubstr(lines[i],15); StringTrimLeft(value); StringTrimRight(value);
+   if(StringLen(value)>48) return "";
+   for(int j=0;j<StringLen(value);j++) {
+    ushort c=StringGetCharacter(value,j);
+    if(!((c>='A' && c<='Z') || c=='_')) return "";
+   }
+   return value;
+  }
+ }
+ return "";
 }
 void News_Receive(datetime now) {
  if(News_Replay || MQLInfoInteger(MQL_TESTER)) {
@@ -67,9 +102,13 @@ void News_Receive(datetime now) {
   if(code==200) {
    News_status=News_pending!="" ? "CONNECTED: WAIT price confirmation" : "CONNECTED: WAIT no fresh rate signal";
    string line=CharArrayToString(response,0,-1,CP_UTF8); StringTrimRight(line);
-   if(line=="WAIT\t0\t0\t0") { if(!News_active) { News_pending=""; News_status="CONNECTED: WAIT no fresh rate signal"; } return; }
+   if(line=="WAIT\t0\t0\t0") {
+    string state=News_HeaderState(headers);
+    News_Pause(state!="" ? "CONNECTED: WAIT "+state : "CONNECTED: WAIT no fresh rate signal"); return;
+   }
+   News_live_confirmed=false;
    News_Accept(line,now);
-  } else { if(!News_active) News_pending=""; News_status="WAIT: service unavailable ("+IntegerToString(code)+")"; }
+  } else { News_Pause("WAIT: service unavailable ("+IntegerToString(code)+")"); }
  }
 }
 int News_OnInit() {
@@ -117,6 +156,10 @@ void News_OnTick() {
  }
  if(now>News_expires) { News_Log(News_pending,"WAIT",now,0,0,"expired without confirmation"); News_pending=""; News_status="WAIT: expired"; return; }
  if(now<News_available) return;
+ if(!News_Replay && !MQLInfoInteger(MQL_TESTER) &&
+    (!News_live_confirmed || now-News_last_valid>15)) {
+  News_Pause("WAIT: service confirmation required"); return;
+ }
  double mid=(tick.bid+tick.ask)/2;
  if(News_baseline==0) { News_baseline=mid; News_baseline_time=now; return; }
  if(now-News_baseline_time<News_ConfirmationSeconds || News_direction*(mid-News_baseline)<News_ConfirmationPoints*_Point || (tick.ask-tick.bid)/_Point>News_MaxSpreadPoints) return;

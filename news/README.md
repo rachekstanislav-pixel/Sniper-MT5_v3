@@ -227,3 +227,52 @@ BLS и BEA по-прежнему только журналируются. Ста
 MetaEditor для этой ревизии и фактический виртуальный вход/replay в MT5 не запускались.
 Ранее пользователь подтвердил компиляцию предыдущей ревизии, не этой.
 Проверка всего цикла в MT5 всё ещё необходима; прибыльность не установлена.
+
+## Repair 0.5.0 — why no news signal
+
+The uploaded live JSON contained only expired publications, including four FED RATE
+records with empty `numbers`. Expired events must remain WAIT: historical RSS items do
+not become fresh by restarting the service or extending a tester date range.
+
+Two defects corrected:
+1. Existing empty FED interpretations were permanently skipped. The service now reparses
+   legacy empty records once per parser revision, and retries transient document errors
+   after at least 60 seconds. Successful interpretations remain immutable. First feed
+   receipt/publication timestamps stay intact; a later interpretation has a later
+   `available_at`, so it is never replayed before the supporting page was obtained.
+2. HTTP WAIT/outages cleared a pending EA event but left its ID consumed forever.
+   The pending event now pauses until recovery or expiry. No entry while paused.
+   After recovery the same ID resumes without another OBSERVE or duplicate entry;
+   price confirmation starts over. Already open virtual trades continue quote-based exits.
+
+Parser handles Unicode fractions and HTML entities/tags; contradictory decisions return
+WAIT. Original feed and release response bytes are archived in the same SQLite database,
+keyed by URL and SHA256 for future analysis. No BLS access-control bypass was added.
+A stored unrecognized response is retried after a parser version upgrade; transient
+HTTP errors are retried. A successful already interpreted decision is not overwritten
+by a revised page.
+
+Open `http://127.0.0.1:8765/status` for a compact diagnostic report. It shows readiness,
+source errors, latest rate publication and age, parsed range/action, parse failure,
+current decision and wait reason counts. `/events` retains the full archive view.
+Live response header `X-Sniper-State` explains WAIT on the updated EA label:
+- STALE_RATE: latest rate release expired (15-minute TTL remains unchanged).
+- FED_UNAVAILABLE: own source unavailable/stale.
+- RATE_RELEASE_ERROR / RATE_TEXT_UNRECOGNIZED: release fetch/parser problem.
+- RATE_UNCHANGED: no directional change in rate.
+- COLLECTOR_PAUSED: initial collection, refresh or stale/failed collector.
+
+Update **service.py and full integrated MQ5**; rebuild the latter in MetaEditor.
+Keep SQLite and live news journals. Original BASE source is unchanged.
+This does not add directions for CPI/NFP/PCE/GDP: the original scope remains FED rate
+changes only; a quiet period is valid. A long tester run without a genuine publication
+archive is still not a long historical news test. No artificial current timestamp or
+synthetic direction is injected into live feeds.
+
+Validation: 31 automated tests passed, including a C++ compatibility harness running
+selected actual MQL news function bodies with synthetic quotes (pause/recovery, timeout,
+BUY/SELL, SL/target, expiry, deduplication). This harness is **not** MetaEditor or MT5.
+Separate synthetic local HTTP smoke exercised Unicode rate parsing, isolation of BLS
+403, JSON /status, TSV signal and reason header. Live BLS remains unresolved. No current
+FED release was fetched in this repair; actual official wording beyond tested forms,
+new MetaEditor compilation and real future-news execution remain unverified.
