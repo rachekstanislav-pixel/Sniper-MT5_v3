@@ -3,14 +3,15 @@ import hashlib
 from pathlib import Path
 import zipfile
 ROOT = Path(__file__).resolve().parents[1]
-NAME = 'Sniper_Manager_3.66_News_0.5.0'
+NAME = 'Sniper_Manager_3.67_News_0.5.0_Tester'
 FILES = {
-    'Sniper_Manager_v3_6_6_NEWS_VIRTUAL.mq5': 'Sniper_Manager_v3_6_6_NEWS_VIRTUAL.mq5',
-    'releases/INSTALL_3.66_RU.md': 'README_RU.md',
+    'Sniper_Manager_v3_6_7_NEWS_TESTER.mq5': 'Sniper_Manager_v3_6_7_NEWS_TESTER.mq5',
+    'releases/INSTALL_3.67_RU.md': 'README_RU.md',
+    'news/presets/NEWS_ONLY_SYNTHETIC_3.67.set': 'NEWS_ONLY_SYNTHETIC_3.67.set',
     'news/service.py': 'news/service.py',
     'news/start_news_windows.cmd': 'news/start_news_windows.cmd',
-    'news/fixtures/README.md': 'news/fixtures/README.md',
-    'news/fixtures/SYNTHETIC_20261106.tsv': 'news/fixtures/SYNTHETIC_20261106.tsv',
+    'news/fixtures/README.md': 'CommonFiles/README.md',
+    'news/fixtures/SYNTHETIC_20261106.tsv': 'CommonFiles/SYNTHETIC_20261106.tsv',
 }
 
 def build():

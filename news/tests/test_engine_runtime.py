@@ -47,6 +47,9 @@ bool SymbolInfoTick(string,MqlTick& t){t=quote;return true;}
 bool News_Seen(string id){for(auto s:seen)if(s==id)return true;return false;}
 void News_Remember(string id){seen.push_back(id);}
 void News_Log(string,string action,long,double,double,string){actions.push_back(action);}
+bool News_TesterOrders=false;
+void News_TesterManage(long){}
+bool News_TesterOpen(long,MqlTick&){return false;}
 void News_Receive(long){}
 void tick(long t,double bid){clock_now=t;quote.bid=bid;quote.ask=bid+.02;quote.time=t;}
 '''

@@ -13,6 +13,6 @@ void News_RenderStatus() {
   ObjectSetInteger(0,name,OBJPROP_SELECTABLE,false);
  }
  string status=DiagnosticMode && !MQLInfoInteger(MQL_TESTER) ? "WAIT: diagnostic mode, live news disabled" : News_status;
- if(News_active) status=News_direction==1 ? "VIRTUAL BUY" : "VIRTUAL SELL";
- ObjectSetString(0,name,OBJPROP_TEXT,"NEWS [VIRTUAL ONLY] | "+status);
+ if(News_active) status=News_TesterOrders ? (News_direction==1 ? "TESTER BUY" : "TESTER SELL") : (News_direction==1 ? "VIRTUAL BUY" : "VIRTUAL SELL");
+ ObjectSetString(0,name,OBJPROP_TEXT,(News_TesterOrders ? "NEWS [TESTER ORDERS] | " : "NEWS [VIRTUAL ONLY] | ")+status);
 }

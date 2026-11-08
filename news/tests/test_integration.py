@@ -15,15 +15,18 @@ class Integration(unittest.TestCase):
         # Remove only the explicitly enumerated integration additions and engine.
         engine=(ROOT/'news/mt5/SniperNews.mqh').read_text()
         render=(ROOT/'news/render_status.mqpart').read_text()
-        restored=output.split('\n',1)[1].replace(engine+'\n'+render+'\n','',1)
-        for addition in ['   News_InitOptional();\n',
+        settings=(ROOT/'news/mt5/SniperNewsTesterSettings.mqh').read_text()
+        adapter=(ROOT/'news/mt5/SniperNewsTester.mqh').read_text()
+        restored=output.split('\n',1)[1].replace(settings+'\n'+engine+'\n'+adapter+'\n'+render+'\n','',1)
+        for addition in ['   if(!News_TesterValidate(EnableAutoTrade,DiagnosticMode,MagicNumber)) return INIT_PARAMETERS_INCORRECT;\n',
+                         '   News_InitOptional();\n   if(News_TesterOrders && !News_ready) return INIT_FAILED;\n',
                          '   News_OnDeinit(reason);\n   ObjectDelete(0,G_VisualPrefix+"NEWS_STATUS");\n',
                          '   // DiagnosticMode preserves the original promise: no network requests.\n   if(!DiagnosticMode) News_OnTimer();\n   News_RenderStatus();\n',
                          '   News_OnTick();\n']:
             self.assertEqual(restored.count(addition),1)
             restored=restored.replace(addition,'',1)
         restored=restored.replace('request.expiration=(datetime)((long)TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period));', 'request.expiration=TimeCurrent()+(long)BaseMaxWaitBars*PeriodSeconds(_Period);')
-        restored=restored.replace('#property version "3.66"', '#property version "3.65"')
+        restored=restored.replace('#property version "3.67"', '#property version "3.65"')
         self.assertEqual(restored,builder.BASE.read_text())
     def test_engine_cannot_trade_or_remove_main_ea(self):
         engine=(ROOT/'news/mt5/SniperNews.mqh').read_text()

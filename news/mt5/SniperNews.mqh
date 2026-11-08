@@ -112,9 +112,11 @@ void News_Receive(datetime now) {
  }
 }
 int News_OnInit() {
+ if(News_TesterOrders && !MQLInfoInteger(MQL_TESTER)) { News_status="WAIT: tester orders forbidden live"; return INIT_PARAMETERS_INCORRECT; }
  if(!News_Enabled) { News_status="OFF"; return INIT_SUCCEEDED; }
  if(_Period!=PERIOD_M5 || News_ConfirmationSeconds<1 || News_ConfirmationPoints<=0 || News_StopPoints<=0 || News_TargetPoints<=0 || News_HoldSeconds<1 || News_MaxSpreadPoints<1) return INIT_PARAMETERS_INCORRECT;
  Print("Virtual research only. Confirm symbol is broker GOLD/XAUUSD. No orders. UTC offset=",News_ServerUTCOffsetSeconds);
+ if(News_TesterOrders && News_TesterFreshJournal && !News_TesterReset()) return INIT_FAILED;
  // Recover consumed IDs; unresolved virtual trades are not reconstructed across restarts.
  int h=FileOpen(News_JournalFile,FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
  if(h!=INVALID_HANDLE) {
@@ -143,6 +145,7 @@ void News_OnTick() {
  if(News_Replay || MQLInfoInteger(MQL_TESTER)) News_Receive(now);
  if(!News_ready) return;
  if(News_pending=="") return;
+ if(News_active && News_TesterOrders) { News_TesterManage(now); return; }
  if(News_active) {
   double exit_price=News_direction==1 ? tick.bid : tick.ask;
   bool stop=News_direction==1 ? exit_price<=News_sl : exit_price>=News_sl;
@@ -165,6 +168,10 @@ void News_OnTick() {
  if(now-News_baseline_time<News_ConfirmationSeconds || News_direction*(mid-News_baseline)<News_ConfirmationPoints*_Point || (tick.ask-tick.bid)/_Point>News_MaxSpreadPoints) return;
  News_entry=News_direction==1 ? tick.ask : tick.bid;
  News_sl=News_entry-News_direction*News_StopPoints*_Point; News_tp=News_entry+News_direction*News_TargetPoints*_Point;
+ if(News_TesterOrders) {
+  if(!News_TesterOpen(now,tick)) { News_pending=""; News_status="WAIT: tester entry rejected"; }
+  return;
+ }
  News_opened=now; News_active=true; News_status=News_direction==1 ? "VIRTUAL BUY" : "VIRTUAL SELL";
  News_Log(News_pending,"OPEN",now,News_entry,0,"spread included; zero latency/slippage/fees; no real order");
  if(!News_ready) News_active=false;
